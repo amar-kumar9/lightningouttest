@@ -105,14 +105,20 @@ app.get('/login', (req, res) => {
   }
 
   const state = crypto.randomBytes(32).toString('hex');
+  const codeVerifier = crypto.randomBytes(32).toString('base64url');
+  const codeChallenge = crypto.createHash('sha256').update(codeVerifier).digest('base64url');
+  
   req.session.oauthState = state;
+  req.session.codeVerifier = codeVerifier;
 
   const redirectUri = `${REPLIT_HOST}/oauth/callback`;
   const authUrl = `${SF_LOGIN_URL}/services/oauth2/authorize?` +
     `response_type=code&` +
     `client_id=${encodeURIComponent(SF_CLIENT_ID)}&` +
     `redirect_uri=${encodeURIComponent(redirectUri)}&` +
-    `state=${encodeURIComponent(state)}`;
+    `state=${encodeURIComponent(state)}&` +
+    `code_challenge=${encodeURIComponent(codeChallenge)}&` +
+    `code_challenge_method=S256`;
 
   res.redirect(authUrl);
 });
@@ -128,7 +134,10 @@ app.get('/oauth/callback', async (req, res) => {
     return res.status(403).send('Invalid state parameter - possible CSRF attack');
   }
 
+  const codeVerifier = req.session.codeVerifier;
+  
   delete req.session.oauthState;
+  delete req.session.codeVerifier;
 
   try {
     const redirectUri = `${REPLIT_HOST}/oauth/callback`;
@@ -139,7 +148,8 @@ app.get('/oauth/callback', async (req, res) => {
         code: code,
         client_id: SF_CLIENT_ID,
         client_secret: SF_CLIENT_SECRET,
-        redirect_uri: redirectUri
+        redirect_uri: redirectUri,
+        code_verifier: codeVerifier
       }),
       {
         headers: {

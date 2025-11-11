@@ -20,13 +20,16 @@ Host and display Salesforce Lightning Web Components (c-case-list, c-case-detail
   - Added Lightning Out component rendering
   - Configured session management
   - Set up project structure and dependencies
+  - **Security updates**: Switched from cookie-session to express-session
+  - **PKCE implementation**: Added PKCE (Proof Key for Code Exchange) support for OAuth 2.0
+  - **CSRF protection**: Implemented OAuth state parameter validation
 
 ## Project Architecture
 
 ### Dependencies
 - **express**: Web server framework
 - **axios**: HTTP client for OAuth token requests
-- **cookie-session**: Session management middleware
+- **express-session**: Session management middleware
 - **qs**: Query string parsing for OAuth requests
 
 ### Routes
@@ -86,7 +89,10 @@ Ensure these components exist in your Salesforce org:
 5. **View Components**: After successful login, you'll see your Lightning components rendered
 
 ## Security Notes
-- Sessions are encrypted using cookie-session middleware
-- OAuth tokens are stored in session cookies
+- Sessions are server-side using express-session middleware
+- OAuth tokens are stored securely in server-side sessions (not accessible to client)
+- PKCE (Proof Key for Code Exchange) implemented for OAuth 2.0 security
+- CSRF protection via OAuth state parameter validation
 - Access tokens are passed to Lightning Out for component authentication
 - HTTPS is enforced in production (Replit provides this automatically)
+- Session cookies are httpOnly and secure in production
