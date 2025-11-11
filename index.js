@@ -1,7 +1,8 @@
 const express = require('express');
 const axios = require('axios');
-const cookieSession = require('cookie-session');
+const session = require('express-session');
 const qs = require('qs');
+const crypto = require('crypto');
 
 const app = express();
 const PORT = process.env.PORT || 5000;
@@ -9,13 +10,23 @@ const PORT = process.env.PORT || 5000;
 const SF_CLIENT_ID = process.env.SF_CLIENT_ID;
 const SF_CLIENT_SECRET = process.env.SF_CLIENT_SECRET;
 const REPLIT_HOST = process.env.REPLIT_HOST;
-const SESSION_SECRET = process.env.SESSION_SECRET || 'default-secret-key';
+const SESSION_SECRET = process.env.SESSION_SECRET;
 const SF_LOGIN_URL = process.env.SF_LOGIN_URL || 'https://login.salesforce.com';
 
-app.use(cookieSession({
-  name: 'session',
-  keys: [SESSION_SECRET],
-  maxAge: 24 * 60 * 60 * 1000
+if (!SESSION_SECRET) {
+  console.error('ERROR: SESSION_SECRET environment variable is required for secure session management');
+  process.exit(1);
+}
+
+app.use(session({
+  secret: SESSION_SECRET,
+  resave: false,
+  saveUninitialized: false,
+  cookie: {
+    secure: process.env.NODE_ENV === 'production',
+    httpOnly: true,
+    maxAge: 24 * 60 * 60 * 1000
+  }
 }));
 
 app.use(express.json());
@@ -93,21 +104,31 @@ app.get('/login', (req, res) => {
     return res.status(500).send('Missing SF_CLIENT_ID or REPLIT_HOST configuration');
   }
 
+  const state = crypto.randomBytes(32).toString('hex');
+  req.session.oauthState = state;
+
   const redirectUri = `${REPLIT_HOST}/oauth/callback`;
   const authUrl = `${SF_LOGIN_URL}/services/oauth2/authorize?` +
     `response_type=code&` +
     `client_id=${encodeURIComponent(SF_CLIENT_ID)}&` +
-    `redirect_uri=${encodeURIComponent(redirectUri)}`;
+    `redirect_uri=${encodeURIComponent(redirectUri)}&` +
+    `state=${encodeURIComponent(state)}`;
 
   res.redirect(authUrl);
 });
 
 app.get('/oauth/callback', async (req, res) => {
-  const { code } = req.query;
+  const { code, state } = req.query;
 
   if (!code) {
     return res.status(400).send('No authorization code received');
   }
+
+  if (!state || state !== req.session.oauthState) {
+    return res.status(403).send('Invalid state parameter - possible CSRF attack');
+  }
+
+  delete req.session.oauthState;
 
   try {
     const redirectUri = `${REPLIT_HOST}/oauth/callback`;
@@ -267,8 +288,12 @@ app.get('/app', (req, res) => {
 });
 
 app.get('/logout', (req, res) => {
-  req.session = null;
-  res.redirect('/');
+  req.session.destroy((err) => {
+    if (err) {
+      console.error('Session destruction error:', err);
+    }
+    res.redirect('/');
+  });
 });
 
 app.listen(PORT, '0.0.0.0', () => {
