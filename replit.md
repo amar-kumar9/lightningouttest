@@ -1,0 +1,92 @@
+# Salesforce Lightning Out Application
+
+## Overview
+This is a Node.js Express application that hosts Salesforce Lightning Web Components using the Lightning Out framework. The application implements OAuth 2.0 authentication flow to securely connect to Salesforce and render Lightning components in a standalone web application.
+
+## Purpose
+Host and display Salesforce Lightning Web Components (c-case-list, c-case-detail, c-case-comments) outside of the Salesforce platform using Lightning Out technology.
+
+## Current State
+- Express server with OAuth 2.0 authentication flow configured
+- Session management with cookie-session middleware
+- Three Lightning components ready to render: Case List, Case Detail, and Case Comments
+- Logout functionality implemented
+- Configuration check on home page
+
+## Recent Changes
+- **2025-11-11**: Initial project setup
+  - Created Express server with Salesforce OAuth flow
+  - Implemented login, callback, and app routes
+  - Added Lightning Out component rendering
+  - Configured session management
+  - Set up project structure and dependencies
+
+## Project Architecture
+
+### Dependencies
+- **express**: Web server framework
+- **axios**: HTTP client for OAuth token requests
+- **cookie-session**: Session management middleware
+- **qs**: Query string parsing for OAuth requests
+
+### Routes
+- `GET /`: Home page with login button and configuration status
+- `GET /login`: Initiates Salesforce OAuth flow
+- `GET /oauth/callback`: Handles OAuth callback and token exchange
+- `GET /app`: Main application page rendering Lightning components
+- `GET /logout`: Clears session and logs out user
+
+### Environment Variables Required
+- `SF_CLIENT_ID`: Salesforce Connected App Client ID
+- `SF_CLIENT_SECRET`: Salesforce Connected App Client Secret
+- `REPLIT_HOST`: Your Replit application URL (e.g., https://your-repl.repl.co)
+- `SESSION_SECRET`: Secret key for session encryption (optional, has default)
+- `SF_LOGIN_URL`: Salesforce login URL (optional, defaults to https://login.salesforce.com)
+
+### Lightning Components
+The application is configured to render three Lightning Web Components:
+1. **c-case-list**: Displays a list of cases
+2. **c-case-detail**: Shows detailed information about a case
+3. **c-case-comments**: Displays and manages case comments
+
+## Salesforce Setup Required
+
+### 1. Create a Salesforce Connected App
+1. Go to Setup → App Manager → New Connected App
+2. Enable OAuth Settings
+3. Set Callback URL to: `https://your-repl.repl.co/oauth/callback`
+4. Select OAuth Scopes: "Full access (full)" and "Perform requests at any time (refresh_token, offline_access)"
+5. Save and note the Consumer Key (Client ID) and Consumer Secret (Client Secret)
+
+### 2. Create Lightning Out App
+In your Salesforce org, create a Lightning Out app dependency file:
+- Create an Aura component named `lightningOutApp.app`
+- Include your Lightning Web Components as dependencies
+
+### 3. Deploy Lightning Web Components
+Ensure these components exist in your Salesforce org:
+- c-case-list
+- c-case-detail  
+- c-case-comments
+
+## Usage Instructions
+
+1. **Configure Secrets**: Add the following to Replit Secrets:
+   - SF_CLIENT_ID
+   - SF_CLIENT_SECRET
+   - REPLIT_HOST
+   - SESSION_SECRET (optional)
+
+2. **Run the Application**: The server starts automatically on port 5000
+
+3. **Login**: Visit the home page and click "Login with Salesforce"
+
+4. **Authenticate**: You'll be redirected to Salesforce to authorize the app
+
+5. **View Components**: After successful login, you'll see your Lightning components rendered
+
+## Security Notes
+- Sessions are encrypted using cookie-session middleware
+- OAuth tokens are stored in session cookies
+- Access tokens are passed to Lightning Out for component authentication
+- HTTPS is enforced in production (Replit provides this automatically)
