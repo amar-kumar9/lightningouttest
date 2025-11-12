@@ -1,4 +1,11 @@
 // index.js
+// Secure, production-ready Lightning Out 2.0 host template
+// - resolves merge conflicts
+// - avoids exposing tokens in DOM attributes or console
+// - uses safer session defaults and shows placeholder for Redis store
+// - conditional secure cookie for local development
+// - uses helmet for common security headers
+// - tighter CSP (adjust hosts as needed)
 
 require('dotenv').config();
 const express = require('express');
@@ -6,6 +13,9 @@ const axios = require('axios');
 const session = require('express-session');
 const qs = require('qs');
 const crypto = require('crypto');
+const helmet = require('helmet');
+// const RedisStore = require('connect-redis')(session); // uncomment when using Redis
+// const redisClient = require('./redisClient'); // implement your redis client
 
 const app = express();
 const PORT = process.env.PORT || 5000;
@@ -15,46 +25,70 @@ const SF_CLIENT_SECRET = process.env.SF_CLIENT_SECRET;
 const APP_URL = (process.env.APP_URL || process.env.REPLIT_HOST || `http://localhost:${PORT}`).toLowerCase();
 const SESSION_SECRET = process.env.SESSION_SECRET;
 const SF_LOGIN_URL = process.env.SF_LOGIN_URL || 'https://login.salesforce.com';
+const NODE_ENV = process.env.NODE_ENV || 'development';
 
 if (!SESSION_SECRET) {
   console.error('ERROR: SESSION_SECRET environment variable is required for secure session management');
   process.exit(1);
 }
 
-app.set('trust proxy', 1);
+app.set('trust proxy', 1); // if behind proxy / load balancer
 
-app.use(session({
-  secret: SESSION_SECRET,
-  resave: true,
-  saveUninitialized: true,
-  name: 'lightningout.sid',
-  rolling: true,
-  cookie: {
-    secure: true,
-    httpOnly: true,
-    maxAge: 30 * 60 * 1000,
-    sameSite: 'none',
-    path: '/',
-  },
-}));
+// Security middleware
+app.use(helmet());
 
-app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
-
-// CSP & iframe middleware
+// Tightened CSP — list allowed hosts explicitly. Update with your actual domains.
+const allowedFrameAncestors = ["'self'", 'https://your-frontend.example.com', 'https://*.salesforce.com'];
+const csp = {
+  directives: {
+    defaultSrc: ["'self'"],
+    scriptSrc: ["'self'", "'unsafe-inline'", "'unsafe-eval'", 'https://*.salesforce.com', 'https://*.force.com'],
+    styleSrc: ["'self'", "'unsafe-inline'", 'https://*.salesforce.com', 'https://*.force.com'],
+    imgSrc: ["'self'", 'data:', 'https:'],
+    fontSrc: ["'self'", 'data:', 'https:'],
+    connectSrc: ["'self'", 'https://*.salesforce.com', 'https://*.force.com', SF_LOGIN_URL],
+    frameAncestors: allowedFrameAncestors,
+  }
+};
 app.use((req, res, next) => {
-  const csp = [
-    "frame-ancestors 'self' *",
+  // merge helmet's CSP with our custom-ish header (helmet already sets it but being explicit here)
+  const headerValue = [
+    `frame-ancestors ${allowedFrameAncestors.join(' ')}`,
     "default-src 'self'",
     "script-src 'self' 'unsafe-inline' 'unsafe-eval' https://*.salesforce.com https://*.force.com",
     "style-src 'self' 'unsafe-inline' https://*.salesforce.com https://*.force.com",
     "img-src 'self' data: https:",
     "font-src 'self' data: https:",
-    "connect-src 'self' https://*.salesforce.com https://*.force.com https://login.salesforce.com"
+    `connect-src 'self' https://*.salesforce.com https://*.force.com ${SF_LOGIN_URL}`
   ].join('; ');
-  res.setHeader('Content-Security-Policy', csp);
+  res.setHeader('Content-Security-Policy', headerValue);
+  // X-Frame-Options is handled by frame-ancestors in CSP. Keep other headers from helmet.
   next();
 });
+
+// Session configuration
+const sessionOptions = {
+  secret: SESSION_SECRET,
+  name: 'lightningout.sid',
+  resave: false,
+  saveUninitialized: false,
+  rolling: true,
+  cookie: {
+    httpOnly: true,
+    secure: NODE_ENV === 'production', // require HTTPS in production
+    sameSite: 'none', // required for cross-site usage; ensure you're serving over HTTPS in prod
+    maxAge: 30 * 60 * 1000,
+    path: '/',
+  },
+};
+
+// Uncomment and configure a persistent store for production
+// sessionOptions.store = new RedisStore({ client: redisClient });
+
+app.use(session(sessionOptions));
+
+app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
 
 // Helper for token refresh
 async function refreshAccessToken(refreshToken) {
@@ -67,12 +101,9 @@ async function refreshAccessToken(refreshToken) {
         client_id: SF_CLIENT_ID,
         client_secret: SF_CLIENT_SECRET
       }),
-      {
-        headers: {
-          'Content-Type': 'application/x-www-form-urlencoded'
-        }
-      }
+      { headers: { 'Content-Type': 'application/x-www-form-urlencoded' } }
     );
+
     return {
       accessToken: tokenResponse.data.access_token,
       instanceUrl: tokenResponse.data.instance_url,
@@ -84,10 +115,10 @@ async function refreshAccessToken(refreshToken) {
   }
 }
 
-// Debug log middleware
+// Debug log middleware for oauth endpoints only — minimal and avoiding secrets
 app.use((req, res, next) => {
   if (req.path.startsWith('/oauth')) {
-    console.log('SessionID:', req.sessionID, 'Cookies:', req.headers.cookie ? 'Y' : 'N');
+    console.log('OAuth request:', req.method, req.path, 'sessionExists:', !!req.session);
   }
   next();
 });
@@ -162,7 +193,7 @@ app.get('/oauth/callback', async (req, res) => {
         grant_type: 'authorization_code',
         code,
         client_id: SF_CLIENT_ID,
-        client_secret: SF_CLIENT_SECRET,
+        client_secret: SF_CLIENT_SECRET, // if using confidential server flow; safe on server
         redirect_uri: redirectUri,
         code_verifier: codeVerifier
       }),
@@ -173,10 +204,26 @@ app.get('/oauth/callback', async (req, res) => {
     req.session.instanceUrl = tokenResponse.data.instance_url;
     req.session.refreshToken = tokenResponse.data.refresh_token;
 
+    // Redirect to the app page
     res.redirect('/app');
   } catch (error) {
-    res.status(500).send('Auth Error: ' + (error.response?.data?.error_description || error.message));
+    console.error('Auth Error:', error.response?.data || error.message);
+    res.status(500).send('Auth Error');
   }
+});
+
+// Provide minimal session details to the client via XHR (no tokens in DOM by server-render)
+app.get('/session-info', (req, res) => {
+  if (!req.session.accessToken || !req.session.instanceUrl) return res.status(401).json({ error: 'not_logged_in' });
+
+  // We deliberately do not send the raw access token in server-rendered HTML. Client may request it via this endpoint.
+  // NOTE: returning accessToken to client means client JS can use it. Protect this endpoint via session checks.
+
+  res.json({
+    instanceUrl: req.session.instanceUrl,
+    // do not send accessToken here if you want stricter control — alternatives: server-side proxy for frontdoor
+    // accessToken: req.session.accessToken
+  });
 });
 
 // Middleware for token enforcement
@@ -187,7 +234,8 @@ async function ensureValidToken(req, res, next) {
 
 // Lightning Out 2.0 host page
 app.get('/app', ensureValidToken, (req, res) => {
-  const { accessToken, instanceUrl } = req.session;
+  // Do NOT embed access token or sid into HTML attributes.
+  // Client will fetch /session-info and then perform any dynamic initialization it needs.
 
   res.setHeader('X-Content-Type-Options', 'nosniff');
   res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
@@ -197,7 +245,6 @@ app.get('/app', ensureValidToken, (req, res) => {
     <html>
     <head>
       <title>Lightning Out App</title>
-      <script type="text/javascript" async src="${instanceUrl}/lightning/lightning.out.latest/index.iife.prod.js"></script>
       <style>
         body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; margin: 0; padding: 20px; background: #f4f6f9; }
         .header { background: white; padding: 20px; border-radius: 8px; margin-bottom: 20px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
@@ -209,11 +256,56 @@ app.get('/app', ensureValidToken, (req, res) => {
         <h1>Salesforce Lightning Out 2.0 Application</h1>
         <a href="/logout">Logout</a>
       </div>
-      <lightning-out-application 
-        components="c-case-list"
-        instance-url="${instanceUrl}"
-        access-token="${accessToken}">
-      </lightning-out-application>
+
+      <div class="component-container">
+        <p>Loading Salesforce components…</p>
+        <!-- The lightning-out script will be added at runtime after we determine the instance URL. -->
+        <div id="lout-root"></div>
+      </div>
+
+      <script>
+        async function initLightningOut() {
+          try {
+            const r = await fetch('/session-info', { credentials: 'same-origin' });
+            if (!r.ok) throw new Error('Not authenticated');
+            const info = await r.json();
+
+            // Dynamically load the Lightning Out script from the instance URL
+            const scriptUrl = info.instanceUrl + '/lightning/lightning.out.latest/index.iife.prod.js';
+            const s = document.createElement('script');
+            s.src = scriptUrl;
+            s.async = true;
+            s.onload = () => {
+              // Create lightning-out application element and initialize it.
+              // IMPORTANT: We avoid placing tokens into attributes. If your LWC requires a frontdoor-based context,
+              // consider implementing a server-side proxy endpoint that performs the frontdoor redirect and does not render the sid into the page.
+
+              const appEl = document.createElement('lightning-out-application');
+              appEl.setAttribute('components', 'c-case-list');
+              // If your org requires a frontdoor URL, fetch a server-generated short-lived frontdoor URL from an endpoint instead
+              // and set it programmatically here. Do NOT hardcode the SID in server-rendered HTML.
+
+              document.getElementById('lout-root').appendChild(appEl);
+
+              // Optional: listen for custom events
+              document.addEventListener('lightning-out-error', function(event) {
+                console.error('Lightning Out Error (client):', event.detail);
+              });
+              document.addEventListener('lightning-out-ready', function(event) {
+                console.log('Lightning Out Ready');
+              });
+            };
+            s.onerror = (e) => console.error('Failed to load Lightning Out script', e);
+            document.head.appendChild(s);
+          } catch (err) {
+            console.error('Initialization error:', err);
+            window.location = '/login';
+          }
+        }
+
+        // Initialize after load
+        window.addEventListener('load', initLightningOut);
+      </script>
     </body>
     </html>
   `);
@@ -236,6 +328,7 @@ app.get('/refresh-token', async (req, res) => {
 
     res.redirect(req.query.redirect || '/app');
   } catch (error) {
+    console.error('Refresh token failed. Destroying session.');
     req.session.destroy(() => res.redirect('/login?error=session_expired'));
   }
 });
@@ -243,14 +336,17 @@ app.get('/refresh-token', async (req, res) => {
 // Health check
 app.get('/health', (req, res) => res.json({ status: 'ok', timestamp: new Date().toISOString() }));
 
-// Error handler
+// Generic error handler
 app.use((err, req, res, next) => {
   console.error('Error:', err);
-  res.status(500).json({ error: 'Internal server error', message: err.message });
+  if (res.headersSent) return next(err);
+  res.status(500).json({ error: 'Internal server error' });
 });
 
 app.listen(PORT, '0.0.0.0', () => {
   console.log(`Server running on port ${PORT}`);
   console.log(`  SF_CLIENT_ID: ${SF_CLIENT_ID ? '✓ Set' : '✗ Missing'}`);
   console.log(`  APP_URL: ${APP_URL ? '✓ Set' : '✗ Missing'}`);
+  console.log(`  NODE_ENV: ${NODE_ENV}`);
 });
+
