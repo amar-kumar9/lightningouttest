@@ -44,6 +44,34 @@ app.use(session({
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
+// Helper function to refresh access token
+async function refreshAccessToken(refreshToken) {
+  try {
+    const tokenResponse = await axios.post(
+      `${SF_LOGIN_URL}/services/oauth2/token`,
+      qs.stringify({
+        grant_type: 'refresh_token',
+        refresh_token: refreshToken,
+        client_id: SF_CLIENT_ID,
+        client_secret: SF_CLIENT_SECRET
+      }),
+      {
+        headers: {
+          'Content-Type': 'application/x-www-form-urlencoded'
+        }
+      }
+    );
+    return {
+      accessToken: tokenResponse.data.access_token,
+      instanceUrl: tokenResponse.data.instance_url,
+      refreshToken: tokenResponse.data.refresh_token || refreshToken // Keep old refresh token if new one not provided
+    };
+  } catch (error) {
+    console.error('Token refresh error:', error.response?.data || error.message);
+    throw error;
+  }
+}
+
 // Debug middleware for session/cookie issues
 app.use((req, res, next) => {
   if (req.path === '/oauth/callback' || req.path === '/login') {
@@ -298,11 +326,19 @@ Session ID: ${req.sessionID || 'none'}</pre>
   }
 });
 
-app.get('/app', (req, res) => {
+// Middleware to refresh token if needed
+async function ensureValidToken(req, res, next) {
   if (!req.session.accessToken || !req.session.instanceUrl) {
     return res.redirect('/login');
   }
 
+  // Try to refresh token if we have a refresh token (proactive refresh)
+  // Note: We'll let Lightning Out handle token refresh on client side
+  // This is just a safety check
+  next();
+}
+
+app.get('/app', ensureValidToken, (req, res) => {
   const { accessToken, instanceUrl } = req.session;
 
   res.send(`
@@ -384,6 +420,17 @@ app.get('/app', (req, res) => {
       <script>
         const accessToken = '${accessToken}';
         const instanceUrl = '${instanceUrl}';
+        const refreshToken = '${req.session.refreshToken || ''}';
+
+        // Error handler for invalid session
+        window.addEventListener('auraError', function(event) {
+          const error = event.detail;
+          if (error && error.event && error.event.descriptor === 'markup://aura:invalidSession') {
+            console.error('Invalid session detected - redirecting to refresh');
+            // Redirect to refresh endpoint
+            window.location.href = '/refresh-token?redirect=/app';
+          }
+        });
 
         $Lightning.use(
           "c:lightningOutApp",
@@ -396,6 +443,12 @@ app.get('/app', (req, res) => {
               "caseListContainer",
               function(cmp) {
                 console.log('Case List component created');
+              },
+              function(error) {
+                console.error('Case List error:', error);
+                if (error && error.event && error.event.descriptor === 'markup://aura:invalidSession') {
+                  window.location.href = '/refresh-token?redirect=/app';
+                }
               }
             );
 
@@ -405,6 +458,12 @@ app.get('/app', (req, res) => {
               "caseDetailContainer",
               function(cmp) {
                 console.log('Case Detail component created');
+              },
+              function(error) {
+                console.error('Case Detail error:', error);
+                if (error && error.event && error.event.descriptor === 'markup://aura:invalidSession') {
+                  window.location.href = '/refresh-token?redirect=/app';
+                }
               }
             );
 
@@ -414,6 +473,12 @@ app.get('/app', (req, res) => {
               "caseCommentsContainer",
               function(cmp) {
                 console.log('Case Comments component created');
+              },
+              function(error) {
+                console.error('Case Comments error:', error);
+                if (error && error.event && error.event.descriptor === 'markup://aura:invalidSession') {
+                  window.location.href = '/refresh-token?redirect=/app';
+                }
               }
             );
           },
@@ -435,6 +500,37 @@ app.get('/logout', (req, res) => {
   });
 });
 
+// Refresh token endpoint
+app.get('/refresh-token', async (req, res) => {
+  if (!req.session.refreshToken) {
+    console.log('No refresh token available - redirecting to login');
+    return res.redirect('/login');
+  }
+
+  try {
+    console.log('Refreshing access token...');
+    const tokens = await refreshAccessToken(req.session.refreshToken);
+    
+    req.session.accessToken = tokens.accessToken;
+    req.session.instanceUrl = tokens.instanceUrl;
+    if (tokens.refreshToken) {
+      req.session.refreshToken = tokens.refreshToken;
+    }
+
+    console.log('Token refreshed successfully');
+    
+    // Redirect to the requested page or /app
+    const redirectTo = req.query.redirect || '/app';
+    res.redirect(redirectTo);
+  } catch (error) {
+    console.error('Token refresh failed:', error.response?.data || error.message);
+    // Clear session and redirect to login
+    req.session.destroy(() => {
+      res.redirect('/login?error=session_expired');
+    });
+  }
+});
+
 // Test endpoint for Lightning Out app
 app.get('/test-lightning-out', async (req, res) => {
   if (!req.session.accessToken || !req.session.instanceUrl) {
@@ -444,8 +540,8 @@ app.get('/test-lightning-out', async (req, res) => {
     });
   }
 
-  const { accessToken, instanceUrl } = req.session;
-  const lightningOutUrl = `${instanceUrl}/c/lightningOutApp.app?aura.format=JSON&aura.formatAdapter=LIGHTNING_OUT`;
+  let { accessToken, instanceUrl, refreshToken } = req.session;
+  let lightningOutUrl = `${instanceUrl}/c/lightningOutApp.app?aura.format=JSON&aura.formatAdapter=LIGHTNING_OUT`;
 
   try {
     console.log('Testing Lightning Out app:', {
@@ -454,13 +550,54 @@ app.get('/test-lightning-out', async (req, res) => {
       hasToken: !!accessToken
     });
 
-    const response = await axios.get(lightningOutUrl, {
+    let response = await axios.get(lightningOutUrl, {
       headers: {
         'Authorization': `Bearer ${accessToken}`,
         'Content-Type': 'application/json',
         'Accept': 'application/json'
       }
     });
+
+    // Check if response contains invalid session error
+    if (response.data && response.data.exceptionEvent && 
+        response.data.event && response.data.event.descriptor === 'markup://aura:invalidSession') {
+      console.log('Invalid session detected, attempting token refresh...');
+      
+      if (refreshToken) {
+        try {
+          const tokens = await refreshAccessToken(refreshToken);
+          req.session.accessToken = tokens.accessToken;
+          req.session.instanceUrl = tokens.instanceUrl;
+          if (tokens.refreshToken) {
+            req.session.refreshToken = tokens.refreshToken;
+          }
+          
+          // Retry with new token
+          accessToken = tokens.accessToken;
+          response = await axios.get(lightningOutUrl, {
+            headers: {
+              'Authorization': `Bearer ${accessToken}`,
+              'Content-Type': 'application/json',
+              'Accept': 'application/json'
+            }
+          });
+          console.log('Token refreshed and retry successful');
+        } catch (refreshError) {
+          console.error('Token refresh failed:', refreshError.response?.data || refreshError.message);
+          return res.status(401).json({
+            error: 'Session expired',
+            message: 'Token refresh failed. Please login again.',
+            refreshError: refreshError.response?.data || refreshError.message
+          });
+        }
+      } else {
+        return res.status(401).json({
+          error: 'Invalid session',
+          message: 'No refresh token available. Please login again.',
+          data: response.data
+        });
+      }
+    }
 
     res.json({
       status: 'success',
@@ -469,6 +606,38 @@ app.get('/test-lightning-out', async (req, res) => {
       statusCode: response.status
     });
   } catch (error) {
+    // If 401, try to refresh token
+    if (error.response?.status === 401 && refreshToken) {
+      try {
+        console.log('401 error, attempting token refresh...');
+        const tokens = await refreshAccessToken(refreshToken);
+        req.session.accessToken = tokens.accessToken;
+        req.session.instanceUrl = tokens.instanceUrl;
+        if (tokens.refreshToken) {
+          req.session.refreshToken = tokens.refreshToken;
+        }
+        
+        // Retry with new token
+        const retryResponse = await axios.get(lightningOutUrl, {
+          headers: {
+            'Authorization': `Bearer ${tokens.accessToken}`,
+            'Content-Type': 'application/json',
+            'Accept': 'application/json'
+          }
+        });
+        
+        return res.json({
+          status: 'success (after refresh)',
+          url: lightningOutUrl,
+          response: retryResponse.data,
+          statusCode: retryResponse.status,
+          tokenRefreshed: true
+        });
+      } catch (refreshError) {
+        console.error('Token refresh failed:', refreshError.response?.data || refreshError.message);
+      }
+    }
+
     console.error('Lightning Out test error:', {
       status: error.response?.status,
       statusText: error.response?.statusText,
