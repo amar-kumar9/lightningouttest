@@ -425,7 +425,7 @@ app.get('/app', ensureValidToken, (req, res) => {
           font-style: italic;
         }
       </style>
-      <script type="text/javascript" src="${instanceUrl}/lightning/lightning.out.js"></script>
+      <script type="text/javascript" async src="${instanceUrl}/lightning/lightning.out.latest/index.iife.prod.js"></script>
     </head>
     <body>
       <div class="header">
@@ -433,20 +433,29 @@ app.get('/app', ensureValidToken, (req, res) => {
         <a href="/logout" class="logout-btn">Logout</a>
       </div>
 
-      <div class="component-container">
-        <h2>Case List</h2>
-        <div id="caseListContainer" class="loading">Loading Case List component...</div>
-      </div>
+      <lightning-out-application 
+        components="c-case-list,c-case-detail,c-case-comments"
+        instance-url="${instanceUrl}"
+        access-token="${accessToken}">
+        
+        <div class="component-container">
+          <h2>Case List</h2>
+          <div class="loading">Loading Case List component...</div>
+          <c-case-list></c-case-list>
+        </div>
 
-      <div class="component-container">
-        <h2>Case Detail</h2>
-        <div id="caseDetailContainer" class="loading">Loading Case Detail component...</div>
-      </div>
+        <div class="component-container">
+          <h2>Case Detail</h2>
+          <div class="loading">Loading Case Detail component...</div>
+          <c-case-detail></c-case-detail>
+        </div>
 
-      <div class="component-container">
-        <h2>Case Comments</h2>
-        <div id="caseCommentsContainer" class="loading">Loading Case Comments component...</div>
-      </div>
+        <div class="component-container">
+          <h2>Case Comments</h2>
+          <div class="loading">Loading Case Comments component...</div>
+          <c-case-comments></c-case-comments>
+        </div>
+      </lightning-out-application>
 
       <script>
         const accessToken = '${accessToken}';
@@ -463,59 +472,12 @@ app.get('/app', ensureValidToken, (req, res) => {
           }
         });
 
-        $Lightning.use(
-          "c:lightningOutApp",
-          function() {
-            console.log('Lightning Out app initialized');
-            
-            $Lightning.createComponent(
-              "c:caseList",
-              {},
-              "caseListContainer",
-              function(cmp) {
-                console.log('Case List component created');
-              },
-              function(error) {
-                console.error('Case List error:', error);
-                if (error && error.event && error.event.descriptor === 'markup://aura:invalidSession') {
-                  window.location.href = '/refresh-token?redirect=/app';
-                }
-              }
-            );
-
-            $Lightning.createComponent(
-              "c:caseDetail",
-              {},
-              "caseDetailContainer",
-              function(cmp) {
-                console.log('Case Detail component created');
-              },
-              function(error) {
-                console.error('Case Detail error:', error);
-                if (error && error.event && error.event.descriptor === 'markup://aura:invalidSession') {
-                  window.location.href = '/refresh-token?redirect=/app';
-                }
-              }
-            );
-
-            $Lightning.createComponent(
-              "c:caseComments",
-              {},
-              "caseCommentsContainer",
-              function(cmp) {
-                console.log('Case Comments component created');
-              },
-              function(error) {
-                console.error('Case Comments error:', error);
-                if (error && error.event && error.event.descriptor === 'markup://aura:invalidSession') {
-                  window.location.href = '/refresh-token?redirect=/app';
-                }
-              }
-            );
-          },
-          instanceUrl,
-          accessToken
-        );
+        // Log when Lightning Out is ready
+        window.addEventListener('DOMContentLoaded', function() {
+          console.log('Lightning Out v2 initialized');
+          console.log('Instance URL:', instanceUrl);
+          console.log('Access Token:', accessToken ? 'Present' : 'Missing');
+        });
       </script>
     </body>
     </html>
