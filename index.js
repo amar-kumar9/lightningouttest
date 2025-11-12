@@ -642,16 +642,31 @@ app.get('/test-lightning-out', async (req, res) => {
       status: error.response?.status,
       statusText: error.response?.statusText,
       data: error.response?.data,
-      message: error.message
+      headers: error.response?.headers,
+      message: error.message,
+      url: lightningOutUrl
     });
 
-    res.status(error.response?.status || 500).json({
+    // Provide detailed error information
+    const errorResponse = {
       error: 'Lightning Out test failed',
       url: lightningOutUrl,
       status: error.response?.status,
       statusText: error.response?.statusText,
-      data: error.response?.data || error.message
-    });
+      data: error.response?.data || error.message,
+      troubleshooting: {
+        '500 Error': 'This usually means the Lightning Out app is not properly configured in Salesforce',
+        'Check': [
+          '1. Verify lightningOutApp.app exists in your Salesforce org',
+          '2. Check that it extends ltng:outApp',
+          '3. Ensure all component dependencies are deployed',
+          '4. Verify the app has GLOBAL access',
+          '5. Check Salesforce setup logs for more details'
+        ]
+      }
+    };
+
+    res.status(error.response?.status || 500).json(errorResponse);
   }
 });
 
