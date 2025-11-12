@@ -435,6 +435,57 @@ app.get('/logout', (req, res) => {
   });
 });
 
+// Test endpoint for Lightning Out app
+app.get('/test-lightning-out', async (req, res) => {
+  if (!req.session.accessToken || !req.session.instanceUrl) {
+    return res.status(401).json({
+      error: 'Not authenticated',
+      message: 'Please login first at /login'
+    });
+  }
+
+  const { accessToken, instanceUrl } = req.session;
+  const lightningOutUrl = `${instanceUrl}/c/lightningOutApp.app?aura.format=JSON&aura.formatAdapter=LIGHTNING_OUT`;
+
+  try {
+    console.log('Testing Lightning Out app:', {
+      instanceUrl: instanceUrl,
+      lightningOutUrl: lightningOutUrl,
+      hasToken: !!accessToken
+    });
+
+    const response = await axios.get(lightningOutUrl, {
+      headers: {
+        'Authorization': `Bearer ${accessToken}`,
+        'Content-Type': 'application/json',
+        'Accept': 'application/json'
+      }
+    });
+
+    res.json({
+      status: 'success',
+      url: lightningOutUrl,
+      response: response.data,
+      statusCode: response.status
+    });
+  } catch (error) {
+    console.error('Lightning Out test error:', {
+      status: error.response?.status,
+      statusText: error.response?.statusText,
+      data: error.response?.data,
+      message: error.message
+    });
+
+    res.status(error.response?.status || 500).json({
+      error: 'Lightning Out test failed',
+      url: lightningOutUrl,
+      status: error.response?.status,
+      statusText: error.response?.statusText,
+      data: error.response?.data || error.message
+    });
+  }
+});
+
 // Health check endpoint for hosting platforms
 app.get('/health', (req, res) => {
   res.json({
