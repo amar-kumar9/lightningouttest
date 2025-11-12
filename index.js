@@ -20,25 +20,44 @@ if (!SESSION_SECRET) {
   process.exit(1);
 }
 
+// Trust proxy for Render (needed for secure cookies behind proxy)
+app.set('trust proxy', 1);
+
 app.use(session({
   secret: SESSION_SECRET,
-  resave: false,
-  saveUninitialized: false,
+  resave: true, // Changed to true to help with session persistence
+  saveUninitialized: true, // Changed to true to ensure session is created
   name: 'lightningout.sid', // Custom session name
+  rolling: true, // Reset expiration on activity
   cookie: {
-    secure: process.env.NODE_ENV === 'production' || APP_URL.startsWith('https://'),
+    secure: true, // Always true for HTTPS (Render provides HTTPS)
     httpOnly: true,
-    maxAge: 24 * 60 * 60 * 1000, // 24 hours
+    maxAge: 30 * 60 * 1000, // 30 minutes (shorter for OAuth flow)
     sameSite: 'lax',
-    // Don't set domain - let browser handle it
-    // This helps with case-sensitivity issues
+    // Don't set domain - let browser handle it automatically
+    path: '/', // Ensure cookie is available for all paths
   },
-  // For Render: sessions are stored in memory (single instance) or need Redis for multiple instances
-  // For now, memory store is fine for free tier
+  // For Render: sessions are stored in memory
+  // Note: If app restarts, sessions are lost (this is expected on free tier)
 }));
 
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
+
+// Debug middleware for session/cookie issues
+app.use((req, res, next) => {
+  if (req.path === '/oauth/callback' || req.path === '/login') {
+    console.log('Request debug:', {
+      path: req.path,
+      method: req.method,
+      hasCookies: !!req.headers.cookie,
+      cookieHeader: req.headers.cookie ? 'present' : 'missing',
+      sessionId: req.sessionID,
+      userAgent: req.headers['user-agent']?.substring(0, 50)
+    });
+  }
+  next();
+});
 
 app.get('/', (req, res) => {
   res.send(`
@@ -112,33 +131,51 @@ app.get('/login', (req, res) => {
     return res.status(500).send('Missing SF_CLIENT_ID or APP_URL configuration');
   }
 
-  const state = crypto.randomBytes(32).toString('hex');
-  const codeVerifier = crypto.randomBytes(32).toString('base64url');
-  const codeChallenge = crypto.createHash('sha256').update(codeVerifier).digest('base64url');
-  
-  req.session.oauthState = state;
-  req.session.codeVerifier = codeVerifier;
+  // Regenerate session to ensure we have a fresh session ID
+  req.session.regenerate((err) => {
+    if (err) {
+      console.error('Session regeneration error:', err);
+      return res.status(500).send('Session error - please try again');
+    }
 
-  const redirectUri = `${APP_URL}/oauth/callback`;
-  console.log('DEBUG: Login initiated:', {
-    redirectUri: redirectUri,
-    appUrl: APP_URL,
-    state: state,
-    sessionId: req.sessionID,
-    hasCodeVerifier: !!codeVerifier
+    const state = crypto.randomBytes(32).toString('hex');
+    const codeVerifier = crypto.randomBytes(32).toString('base64url');
+    const codeChallenge = crypto.createHash('sha256').update(codeVerifier).digest('base64url');
+    
+    req.session.oauthState = state;
+    req.session.codeVerifier = codeVerifier;
+    
+    // Force save session before redirect
+    req.session.save((err) => {
+      if (err) {
+        console.error('Session save error:', err);
+        return res.status(500).send('Session error - please try again');
+      }
+
+      const redirectUri = `${APP_URL}/oauth/callback`;
+      console.log('DEBUG: Login initiated:', {
+        redirectUri: redirectUri,
+        appUrl: APP_URL,
+        state: state,
+        sessionId: req.sessionID,
+        hasCodeVerifier: !!codeVerifier,
+        cookieSet: !!req.headers.cookie
+      });
+      
+      const authUrl = `${SF_LOGIN_URL}/services/oauth2/authorize?` +
+        `response_type=code&` +
+        `client_id=${encodeURIComponent(SF_CLIENT_ID)}&` +
+        `redirect_uri=${encodeURIComponent(redirectUri)}&` +
+        `state=${encodeURIComponent(state)}&` +
+        `code_challenge=${encodeURIComponent(codeChallenge)}&` +
+        `code_challenge_method=S256`;
+
+      console.log('DEBUG: Full auth URL:', authUrl);
+      res.redirect(authUrl);
+    });
   });
-  
-  const authUrl = `${SF_LOGIN_URL}/services/oauth2/authorize?` +
-    `response_type=code&` +
-    `client_id=${encodeURIComponent(SF_CLIENT_ID)}&` +
-    `redirect_uri=${encodeURIComponent(redirectUri)}&` +
-    `state=${encodeURIComponent(state)}&` +
-    `code_challenge=${encodeURIComponent(codeChallenge)}&` +
-    `code_challenge_method=S256`;
-
-  console.log('DEBUG: Full auth URL:', authUrl);
-  res.redirect(authUrl);
 });
+  
 
 app.get('/oauth/callback', async (req, res) => {
   const { code, state } = req.query;
@@ -150,10 +187,13 @@ app.get('/oauth/callback', async (req, res) => {
   // Debug session state
   console.log('DEBUG: Callback received:', {
     hasSession: !!req.session,
+    sessionId: req.sessionID,
     sessionState: req.session?.oauthState,
     receivedState: state,
     statesMatch: state === req.session?.oauthState,
-    hasCodeVerifier: !!req.session?.codeVerifier
+    hasCodeVerifier: !!req.session?.codeVerifier,
+    cookies: req.headers.cookie ? 'present' : 'missing',
+    allSessionKeys: req.session ? Object.keys(req.session) : []
   });
 
   if (!state || !req.session.oauthState || state !== req.session.oauthState) {
