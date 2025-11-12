@@ -1,3 +1,4 @@
+require('dotenv').config();
 const express = require('express');
 const axios = require('axios');
 const session = require('express-session');
@@ -9,7 +10,7 @@ const PORT = process.env.PORT || 5000;
 
 const SF_CLIENT_ID = process.env.SF_CLIENT_ID;
 const SF_CLIENT_SECRET = process.env.SF_CLIENT_SECRET;
-const REPLIT_HOST = process.env.REPLIT_HOST;
+const APP_URL = process.env.APP_URL || process.env.REPLIT_HOST || `http://localhost:${PORT}`;
 const SESSION_SECRET = process.env.SESSION_SECRET;
 const SF_LOGIN_URL = process.env.SF_LOGIN_URL || 'https://login.salesforce.com';
 
@@ -23,9 +24,10 @@ app.use(session({
   resave: false,
   saveUninitialized: false,
   cookie: {
-    secure: process.env.NODE_ENV === 'production',
+    secure: process.env.NODE_ENV === 'production' || APP_URL.startsWith('https://'),
     httpOnly: true,
-    maxAge: 24 * 60 * 60 * 1000
+    maxAge: 24 * 60 * 60 * 1000,
+    sameSite: 'lax'
   }
 }));
 
@@ -84,13 +86,13 @@ app.get('/', (req, res) => {
         <h1>Salesforce Lightning Out Application</h1>
         <p>This application hosts Salesforce Lightning Web Components using Lightning Out.</p>
         <p><a href="/login" class="btn">Login with Salesforce</a></p>
-        ${!SF_CLIENT_ID || !SF_CLIENT_SECRET || !REPLIT_HOST ? `
+            ${!SF_CLIENT_ID || !SF_CLIENT_SECRET || !APP_URL || APP_URL.includes('localhost') ? `
           <div class="status">
             <strong>⚠️ Configuration Required:</strong><br>
-            Please configure the following environment secrets:<br>
+            Please configure the following environment variables:<br>
             • SF_CLIENT_ID<br>
             • SF_CLIENT_SECRET<br>
-            • REPLIT_HOST<br>
+            • APP_URL (your HTTPS endpoint URL)<br>
           </div>
         ` : ''}
       </div>
@@ -100,8 +102,8 @@ app.get('/', (req, res) => {
 });
 
 app.get('/login', (req, res) => {
-  if (!SF_CLIENT_ID || !REPLIT_HOST) {
-    return res.status(500).send('Missing SF_CLIENT_ID or REPLIT_HOST configuration');
+  if (!SF_CLIENT_ID || !APP_URL) {
+    return res.status(500).send('Missing SF_CLIENT_ID or APP_URL configuration');
   }
 
   const state = crypto.randomBytes(32).toString('hex');
@@ -111,7 +113,10 @@ app.get('/login', (req, res) => {
   req.session.oauthState = state;
   req.session.codeVerifier = codeVerifier;
 
-  const redirectUri = `${REPLIT_HOST}/oauth/callback`;
+  const redirectUri = `${APP_URL}/oauth/callback`;
+  console.log('DEBUG: Redirect URI being used:', redirectUri);
+  console.log('DEBUG: APP_URL value:', APP_URL);
+  
   const authUrl = `${SF_LOGIN_URL}/services/oauth2/authorize?` +
     `response_type=code&` +
     `client_id=${encodeURIComponent(SF_CLIENT_ID)}&` +
@@ -120,6 +125,7 @@ app.get('/login', (req, res) => {
     `code_challenge=${encodeURIComponent(codeChallenge)}&` +
     `code_challenge_method=S256`;
 
+  console.log('DEBUG: Full auth URL:', authUrl);
   res.redirect(authUrl);
 });
 
@@ -140,7 +146,7 @@ app.get('/oauth/callback', async (req, res) => {
   delete req.session.codeVerifier;
 
   try {
-    const redirectUri = `${REPLIT_HOST}/oauth/callback`;
+    const redirectUri = `${APP_URL}/oauth/callback`;
     const tokenResponse = await axios.post(
       `${SF_LOGIN_URL}/services/oauth2/token`,
       qs.stringify({
@@ -306,11 +312,30 @@ app.get('/logout', (req, res) => {
   });
 });
 
+// Health check endpoint for hosting platforms
+app.get('/health', (req, res) => {
+  res.json({
+    status: 'ok',
+    timestamp: new Date().toISOString(),
+    environment: process.env.NODE_ENV || 'development',
+    port: PORT
+  });
+});
+
+// Error handling middleware
+app.use((err, req, res, next) => {
+  console.error('Error:', err);
+  res.status(500).json({
+    error: 'Internal server error',
+    message: process.env.NODE_ENV === 'production' ? 'An error occurred' : err.message
+  });
+});
+
 app.listen(PORT, '0.0.0.0', () => {
   console.log(`Server running on port ${PORT}`);
   console.log('Configuration status:');
   console.log(`  SF_CLIENT_ID: ${SF_CLIENT_ID ? '✓ Set' : '✗ Missing'}`);
   console.log(`  SF_CLIENT_SECRET: ${SF_CLIENT_SECRET ? '✓ Set' : '✗ Missing'}`);
-  console.log(`  REPLIT_HOST: ${REPLIT_HOST ? '✓ Set' : '✗ Missing'}`);
+  console.log(`  APP_URL: ${APP_URL ? '✓ Set' : '✗ Missing'}`);
   console.log(`  SESSION_SECRET: ${SESSION_SECRET ? '✓ Set' : '✗ Missing'}`);
 });
