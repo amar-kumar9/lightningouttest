@@ -210,7 +210,7 @@ app.get('/app', ensureValidToken, (req, res) => {
         <a href="/logout">Logout</a>
       </div>
       <lightning-out-application 
-        components="c-case-list,c-case-detail,c-case-comments,c-hello"
+        components="c-case-list"
         instance-url="${instanceUrl}"
         access-token="${accessToken}">
       </lightning-out-application>
