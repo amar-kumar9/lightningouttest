@@ -30,10 +30,10 @@ app.use(session({
   name: 'lightningout.sid', // Custom session name
   rolling: true, // Reset expiration on activity
   cookie: {
-    secure: true, // Always true for HTTPS (Render provides HTTPS)
+    secure: true, // Always true for HTTPS (Render provides HTTPS) - required for sameSite: 'none'
     httpOnly: true,
     maxAge: 30 * 60 * 1000, // 30 minutes (shorter for OAuth flow)
-    sameSite: 'lax',
+    sameSite: 'none', // Changed to 'none' to support cross-origin iframes (requires secure: true)
     // Don't set domain - let browser handle it automatically
     path: '/', // Ensure cookie is available for all paths
   },
@@ -43,6 +43,32 @@ app.use(session({
 
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
+
+// Middleware to support iframe embedding
+app.use((req, res, next) => {
+  // Allow iframe embedding (remove X-Frame-Options or set to allow)
+  // Don't set X-Frame-Options: DENY - this would block iframes
+  // Optionally set to SAMEORIGIN if you only want same-origin embedding
+  // For cross-origin iframes, we don't set this header at all
+  
+  // Set Content-Security-Policy to allow iframe embedding
+  // This is more flexible than X-Frame-Options
+  const csp = [
+    "frame-ancestors 'self' *", // Allow embedding from any origin
+    "default-src 'self'",
+    "script-src 'self' 'unsafe-inline' 'unsafe-eval' https://*.salesforce.com https://*.force.com",
+    "style-src 'self' 'unsafe-inline' https://*.salesforce.com https://*.force.com",
+    "img-src 'self' data: https:",
+    "font-src 'self' data: https:",
+    "connect-src 'self' https://*.salesforce.com https://*.force.com https://login.salesforce.com"
+  ].join('; ');
+  
+  res.setHeader('Content-Security-Policy', csp);
+  
+  // For cross-origin iframes, we need sameSite: 'none' cookies
+  // But we'll handle this per-route since it requires secure cookies
+  next();
+});
 
 // Helper function to refresh access token
 async function refreshAccessToken(refreshToken) {
@@ -340,6 +366,11 @@ async function ensureValidToken(req, res, next) {
 
 app.get('/app', ensureValidToken, (req, res) => {
   const { accessToken, instanceUrl } = req.session;
+  const isIframe = req.query.iframe === 'true' || req.headers['sec-fetch-dest'] === 'iframe';
+  
+  // Set additional headers for iframe embedding
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
 
   res.send(`
     <!DOCTYPE html>
