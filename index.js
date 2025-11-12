@@ -10,7 +10,8 @@ const PORT = process.env.PORT || 5000;
 
 const SF_CLIENT_ID = process.env.SF_CLIENT_ID;
 const SF_CLIENT_SECRET = process.env.SF_CLIENT_SECRET;
-const APP_URL = process.env.APP_URL || process.env.REPLIT_HOST || `http://localhost:${PORT}`;
+// Normalize APP_URL to lowercase to avoid case-sensitivity issues
+const APP_URL = (process.env.APP_URL || process.env.REPLIT_HOST || `http://localhost:${PORT}`).toLowerCase();
 const SESSION_SECRET = process.env.SESSION_SECRET;
 const SF_LOGIN_URL = process.env.SF_LOGIN_URL || 'https://login.salesforce.com';
 
@@ -23,12 +24,17 @@ app.use(session({
   secret: SESSION_SECRET,
   resave: false,
   saveUninitialized: false,
+  name: 'lightningout.sid', // Custom session name
   cookie: {
     secure: process.env.NODE_ENV === 'production' || APP_URL.startsWith('https://'),
     httpOnly: true,
-    maxAge: 24 * 60 * 60 * 1000,
-    sameSite: 'lax'
-  }
+    maxAge: 24 * 60 * 60 * 1000, // 24 hours
+    sameSite: 'lax',
+    // Don't set domain - let browser handle it
+    // This helps with case-sensitivity issues
+  },
+  // For Render: sessions are stored in memory (single instance) or need Redis for multiple instances
+  // For now, memory store is fine for free tier
 }));
 
 app.use(express.json());
@@ -114,8 +120,13 @@ app.get('/login', (req, res) => {
   req.session.codeVerifier = codeVerifier;
 
   const redirectUri = `${APP_URL}/oauth/callback`;
-  console.log('DEBUG: Redirect URI being used:', redirectUri);
-  console.log('DEBUG: APP_URL value:', APP_URL);
+  console.log('DEBUG: Login initiated:', {
+    redirectUri: redirectUri,
+    appUrl: APP_URL,
+    state: state,
+    sessionId: req.sessionID,
+    hasCodeVerifier: !!codeVerifier
+  });
   
   const authUrl = `${SF_LOGIN_URL}/services/oauth2/authorize?` +
     `response_type=code&` +
@@ -136,8 +147,43 @@ app.get('/oauth/callback', async (req, res) => {
     return res.status(400).send('No authorization code received');
   }
 
-  if (!state || state !== req.session.oauthState) {
-    return res.status(403).send('Invalid state parameter - possible CSRF attack');
+  // Debug session state
+  console.log('DEBUG: Callback received:', {
+    hasSession: !!req.session,
+    sessionState: req.session?.oauthState,
+    receivedState: state,
+    statesMatch: state === req.session?.oauthState,
+    hasCodeVerifier: !!req.session?.codeVerifier
+  });
+
+  if (!state || !req.session.oauthState || state !== req.session.oauthState) {
+    console.error('State mismatch:', {
+      received: state,
+      expected: req.session.oauthState,
+      sessionId: req.sessionID
+    });
+    return res.status(403).send(`
+      <!DOCTYPE html>
+      <html>
+      <head><title>Authentication Error</title></head>
+      <body style="font-family: Arial; max-width: 600px; margin: 50px auto; padding: 20px;">
+        <h1>Authentication Error</h1>
+        <p><strong>Invalid state parameter</strong> - This usually happens if:</p>
+        <ul>
+          <li>The session expired or was lost</li>
+          <li>You're using a different browser or incognito mode</li>
+          <li>The app restarted between login and callback</li>
+        </ul>
+        <p><a href="/login">Try logging in again</a></p>
+        <details style="margin-top: 20px; padding: 10px; background: #f5f5f5;">
+          <summary>Debug Info</summary>
+          <pre style="font-size: 12px;">Received State: ${state || 'none'}
+Expected State: ${req.session?.oauthState || 'none'}
+Session ID: ${req.sessionID || 'none'}</pre>
+        </details>
+      </body>
+      </html>
+    `);
   }
 
   const codeVerifier = req.session.codeVerifier;
@@ -171,7 +217,44 @@ app.get('/oauth/callback', async (req, res) => {
     res.redirect('/app');
   } catch (error) {
     console.error('OAuth error:', error.response?.data || error.message);
-    res.status(500).send(`Authentication failed: ${error.response?.data?.error_description || error.message}`);
+    console.error('Error details:', {
+      status: error.response?.status,
+      statusText: error.response?.statusText,
+      data: error.response?.data,
+      redirectUri: redirectUri,
+      hasCodeVerifier: !!codeVerifier
+    });
+    
+    const errorMessage = error.response?.data?.error_description || error.message;
+    const errorCode = error.response?.data?.error || 'unknown_error';
+    
+    res.status(500).send(`
+      <!DOCTYPE html>
+      <html>
+      <head>
+        <title>Authentication Failed</title>
+        <style>
+          body { font-family: Arial, sans-serif; max-width: 600px; margin: 50px auto; padding: 20px; }
+          .error { background: #fee; border: 1px solid #fcc; padding: 15px; border-radius: 4px; }
+          .details { background: #f9f9f9; padding: 10px; margin-top: 10px; font-family: monospace; font-size: 12px; }
+        </style>
+      </head>
+      <body>
+        <h1>Authentication Failed</h1>
+        <div class="error">
+          <strong>Error:</strong> ${errorMessage}<br>
+          <strong>Error Code:</strong> ${errorCode}
+        </div>
+        <div class="details">
+          <strong>Debug Info:</strong><br>
+          Redirect URI: ${redirectUri}<br>
+          Has Code Verifier: ${codeVerifier ? 'Yes' : 'No'}<br>
+          Status: ${error.response?.status || 'N/A'}
+        </div>
+        <p><a href="/login">Try Again</a> | <a href="/">Go Home</a></p>
+      </body>
+      </html>
+    `);
   }
 });
 
